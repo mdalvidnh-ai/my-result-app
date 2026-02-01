@@ -16,7 +16,7 @@ def custom_round(x):
         return 0
 
 def clean_marks(val):
-    """Converts AB/ab or strings to 0 for math, otherwise returns float."""
+    """Converts AB/ab or strings to 0 for math calculations."""
     if isinstance(val, str):
         if val.strip().upper() == 'AB':
             return 0.0
@@ -25,7 +25,7 @@ def clean_marks(val):
     except:
         return 0.0
 
-uploaded_file = st.file_uploader("Upload your Excel file (App.xlsx)", type="xlsx")
+uploaded_file = st.file_uploader("Upload App.xlsx", type="xlsx")
 
 if uploaded_file:
     try:
@@ -51,7 +51,7 @@ if uploaded_file:
 
         all_students = {}
 
-        # 1. Fetch data
+        # 1. Fetch data from sheets
         for config in exam_configs:
             sheet_name = find_sheet(config['sheets'])
             if sheet_name:
@@ -65,32 +65,30 @@ if uploaded_file:
                     if roll not in all_students:
                         all_students[roll] = {'Name': row.get('STUDENT NAME', 'Unknown'), 'Exams': {}}
                     
-                    # Fetch Marks (Keeping AB as string if present)
                     marks = {}
                     for k, v in subj_map.items():
                         val = row.get(k, 0)
                         marks[v] = str(val).strip() if str(val).strip().upper() == 'AB' else val
 
-                    # Fetch Total, %, Result
+                    # Fetch Total, %, and Result
+                    # Using str() and rounding immediately to prevent float errors
                     val_total = row.get('TOTAL', row.get('GRAND TOTAL', ''))
                     marks['Grand Total'] = str(val_total) if val_total != '' else ''
                     
                     raw_perc = row.get('%', row.get('PERCENTAGE', ''))
                     try:
-                        marks['%'] = round(float(raw_perc), 2) if raw_perc != '' else ''
+                        # Decrease Indent: Rounding to 2 decimal places here
+                        marks['%'] = str(round(float(raw_perc), 2)) if raw_perc != '' else ''
                     except:
-                        marks['%'] = raw_perc
+                        marks['%'] = str(raw_perc)
                         
                     marks['Result'] = str(row.get('RESULT', ''))
                     all_students[roll]['Exams'][config['label']] = marks
 
-        # 2. Build Template
-        categories = [
-            'FIRST UNIT TEST (25)', 'FIRST TERM EXAM (50)', 
-            'SECOND UNIT TEST (25)', 'ANNUAL EXAM (70/80)', 
-            'INT/PRACTICAL (20/30)', 'Total Marks Out of 200',
-            'Average Marks 200/2=100'
-        ]
+        # 2. Build the Fixed Template (7 Rows)
+        categories = ['FIRST UNIT TEST (25)', 'FIRST TERM EXAM (50)', 'SECOND UNIT TEST (25)', 
+                      'ANNUAL EXAM (70/80)', 'INT/PRACTICAL (20/30)', 'Total Marks Out of 200', 
+                      'Average Marks 200/2=100']
 
         rows = []
         for roll in sorted(all_students.keys(), key=lambda x: float(x) if x.replace('.','',1).isdigit() else 0):
@@ -110,31 +108,30 @@ if uploaded_file:
 
         base_df = pd.DataFrame(rows)
 
-        # Force Object Dtype for non-math columns to prevent Streamlit errors
-        for col in ['Roll No.', 'Column1', 'Column2', 'Grand Total', 'Result', 'Remark', 'Rank'] + subj_list:
-            base_df[col] = base_df[col].astype(str).replace('nan', '').replace('0.0', '0')
+        # CRITICAL FIX: Force every column to be a String before the editor opens
+        # This prevents the "float64 vs string" crash
+        for col in base_df.columns:
+            base_df[col] = base_df[col].astype(str).replace('nan', '')
 
         # 3. Data Editor
-        st.subheader("Edit/Review Marksheet")
-        st.info("Note: 'AB' will be treated as 0 in calculations.")
+        st.subheader("Edit Practical Marks & Review Sheet Data")
+        st.info("AB/ab is treated as 0 for calculations. Percentage is rounded to 2 decimals.")
         
         edited_df = st.data_editor(
             base_df,
-            column_config={
-                "%": st.column_config.NumberColumn(format="%.2f"),
-            },
-            hide_index=True, use_container_width=True
+            hide_index=True,
+            use_container_width=True
         )
 
         # 4. Final Calculation
-        if st.button("Generate Final Report"):
+        if st.button("Generate Final Consolidated Report"):
             processed_data = []
             pass_ranking = []
 
             for i in range(0, len(edited_df), 7):
                 block = edited_df.iloc[i:i+7].copy()
                 
-                # Math Pass: Convert AB to 0 for the first 5 rows
+                # Math conversion for first 5 rows
                 numeric_marks = block.iloc[0:5][subj_list].applymap(clean_marks)
                 
                 # Row 5: Total 200
@@ -147,13 +144,14 @@ if uploaded_file:
                 for sub in subj_list:
                     block.iloc[6, block.columns.get_loc(sub)] = str(avg_100[sub])
 
-                # Final Summary (Average Row)
+                # Final Row Statistics (Average Marks Row)
                 grand_total_final = avg_100.sum()
+                # Decrease Indent: Round to 2 decimals (e.g., 58.17)
                 perc_final = round((grand_total_final / 600) * 100, 2)
                 is_pass = all(m >= 35 for m in avg_100)
                 
                 block.iloc[6, block.columns.get_loc('Grand Total')] = str(grand_total_final)
-                block.iloc[6, block.columns.get_loc('%')] = perc_final
+                block.iloc[6, block.columns.get_loc('%')] = str(perc_final)
                 block.iloc[6, block.columns.get_loc('Result')] = "PASS" if is_pass else "FAIL"
 
                 processed_data.append(block)
@@ -176,8 +174,8 @@ if uploaded_file:
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 output_df.to_excel(writer, index=False, sheet_name='Consolidated')
             
-            st.success("✅ Calculations Finished! Percentage set to 2 decimal places (e.g. 56.57).")
-            st.download_button("📥 Download Excel", output.getvalue(), "Final_Consolidated.xlsx")
+            st.success("✅ Success! Fixed data-type error and rounded percentages.")
+            st.download_button("📥 Download Final Sheet", output.getvalue(), "Final_Consolidated.xlsx")
 
     except Exception as e:
         st.error(f"Error: {e}")
