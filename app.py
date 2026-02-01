@@ -15,6 +15,16 @@ def custom_round(x):
     except:
         return 0
 
+def clean_marks(val):
+    """Converts AB/ab or strings to 0 for math, otherwise returns float."""
+    if isinstance(val, str):
+        if val.strip().upper() == 'AB':
+            return 0.0
+    try:
+        return float(val)
+    except:
+        return 0.0
+
 uploaded_file = st.file_uploader("Upload your Excel file (App.xlsx)", type="xlsx")
 
 if uploaded_file:
@@ -41,12 +51,11 @@ if uploaded_file:
 
         all_students = {}
 
-        # 1. Fetch data with improved column matching for Total and %
+        # 1. Fetch data
         for config in exam_configs:
             sheet_name = find_sheet(config['sheets'])
             if sheet_name:
                 df = xl.parse(sheet_name)
-                # Clean headers: remove spaces and make uppercase
                 df.columns = df.columns.astype(str).str.strip().str.upper()
                 
                 for _, row in df.iterrows():
@@ -56,25 +65,26 @@ if uploaded_file:
                     if roll not in all_students:
                         all_students[roll] = {'Name': row.get('STUDENT NAME', 'Unknown'), 'Exams': {}}
                     
-                    # Fetch Subject Marks
-                    marks = {subj_map[k]: row.get(k, 0) for k in subj_map.keys() if k in df.columns}
+                    # Fetch Marks (Keeping AB as string if present)
+                    marks = {}
+                    for k, v in subj_map.items():
+                        val = row.get(k, 0)
+                        marks[v] = str(val).strip() if str(val).strip().upper() == 'AB' else val
+
+                    # Fetch Total, %, Result
+                    val_total = row.get('TOTAL', row.get('GRAND TOTAL', ''))
+                    marks['Grand Total'] = str(val_total) if val_total != '' else ''
                     
-                    # FETCHING TOTAL, %, RESULT (Improved matching)
-                    # We check for 'TOTAL', 'GRAND TOTAL', or the 9th column if names fail
-                    marks['Grand Total'] = row.get('TOTAL', row.get('GRAND TOTAL', ''))
-                    
-                    # Fetch Percentage and format it to 2 decimal places
                     raw_perc = row.get('%', row.get('PERCENTAGE', ''))
                     try:
                         marks['%'] = round(float(raw_perc), 2) if raw_perc != '' else ''
                     except:
                         marks['%'] = raw_perc
                         
-                    marks['Result'] = row.get('RESULT', '')
-                    
+                    marks['Result'] = str(row.get('RESULT', ''))
                     all_students[roll]['Exams'][config['label']] = marks
 
-        # 2. Build the Fixed Template (7 Rows per student)
+        # 2. Build Template
         categories = [
             'FIRST UNIT TEST (25)', 'FIRST TERM EXAM (50)', 
             'SECOND UNIT TEST (25)', 'ANNUAL EXAM (70/80)', 
@@ -86,13 +96,10 @@ if uploaded_file:
         for roll in sorted(all_students.keys(), key=lambda x: float(x) if x.replace('.','',1).isdigit() else 0):
             s = all_students[roll]
             for cat in categories:
-                row_data = {
-                    'Roll No.': roll if cat == 'FIRST UNIT TEST (25)' else '',
-                    'Column1': s['Name'] if cat == 'FIRST UNIT TEST (25)' else '',
-                    'Column2': cat
-                }
-                for col in subj_list + result_cols:
-                    row_data[col] = ''
+                row_data = {'Roll No.': roll if cat == 'FIRST UNIT TEST (25)' else '',
+                            'Column1': s['Name'] if cat == 'FIRST UNIT TEST (25)' else '',
+                            'Column2': cat}
+                for col in subj_list + result_cols: row_data[col] = ''
                 
                 if cat in s['Exams']:
                     row_data.update(s['Exams'][cat])
@@ -103,48 +110,49 @@ if uploaded_file:
 
         base_df = pd.DataFrame(rows)
 
-        # 3. Data Editor
-        st.subheader("Edit Practical Marks & Review Sheet Data")
-        for sub in subj_list:
-            base_df[sub] = pd.to_numeric(base_df[sub], errors='coerce').fillna(0)
+        # Force Object Dtype for non-math columns to prevent Streamlit errors
+        for col in ['Roll No.', 'Column1', 'Column2', 'Grand Total', 'Result', 'Remark', 'Rank'] + subj_list:
+            base_df[col] = base_df[col].astype(str).replace('nan', '').replace('0.0', '0')
 
+        # 3. Data Editor
+        st.subheader("Edit/Review Marksheet")
+        st.info("Note: 'AB' will be treated as 0 in calculations.")
+        
         edited_df = st.data_editor(
             base_df,
             column_config={
-                "Roll No.": st.column_config.Column(disabled=True),
-                "Column1": st.column_config.Column("Student Name", disabled=True),
-                "Column2": st.column_config.Column("Exam Type", disabled=True),
-                "%": st.column_config.NumberColumn(format="%.2f") # Force 2 decimal places in view
+                "%": st.column_config.NumberColumn(format="%.2f"),
             },
-            hide_index=True,
-            use_container_width=True
+            hide_index=True, use_container_width=True
         )
 
         # 4. Final Calculation
-        if st.button("Generate Final Consolidated Report"):
+        if st.button("Generate Final Report"):
             processed_data = []
             pass_ranking = []
 
             for i in range(0, len(edited_df), 7):
                 block = edited_df.iloc[i:i+7].copy()
-                input_data = block.iloc[0:5][subj_list].apply(pd.to_numeric, errors='coerce').fillna(0)
+                
+                # Math Pass: Convert AB to 0 for the first 5 rows
+                numeric_marks = block.iloc[0:5][subj_list].applymap(clean_marks)
                 
                 # Row 5: Total 200
-                total_200 = input_data.sum()
+                total_200 = numeric_marks.sum()
                 for sub in subj_list:
-                    block.iloc[5, block.columns.get_loc(sub)] = total_200[sub]
+                    block.iloc[5, block.columns.get_loc(sub)] = str(int(total_200[sub]))
                 
                 # Row 6: Average 100
                 avg_100 = total_200.apply(lambda x: custom_round(x/2))
                 for sub in subj_list:
-                    block.iloc[6, block.columns.get_loc(sub)] = avg_100[sub]
+                    block.iloc[6, block.columns.get_loc(sub)] = str(avg_100[sub])
 
-                # Final Row Statistics
+                # Final Summary (Average Row)
                 grand_total_final = avg_100.sum()
                 perc_final = round((grand_total_final / 600) * 100, 2)
                 is_pass = all(m >= 35 for m in avg_100)
                 
-                block.iloc[6, block.columns.get_loc('Grand Total')] = grand_total_final
+                block.iloc[6, block.columns.get_loc('Grand Total')] = str(grand_total_final)
                 block.iloc[6, block.columns.get_loc('%')] = perc_final
                 block.iloc[6, block.columns.get_loc('Result')] = "PASS" if is_pass else "FAIL"
 
@@ -152,7 +160,7 @@ if uploaded_file:
                 if is_pass:
                     pass_ranking.append({'row_idx': (i + 6), 'total': grand_total_final})
 
-            # Apply Global Rank
+            # Apply Rank
             final_df = pd.concat(processed_data)
             pass_ranking.sort(key=lambda x: x['total'], reverse=True)
             ranks_map = {item['row_idx']: r+1 for r, item in enumerate(pass_ranking)}
@@ -160,7 +168,7 @@ if uploaded_file:
             final_records = final_df.to_dict('records')
             for idx, r in enumerate(final_records):
                 if idx in ranks_map:
-                    r['Rank'] = ranks_map[idx]
+                    r['Rank'] = str(ranks_map[idx])
 
             # 5. Export
             output_df = pd.DataFrame(final_records)
@@ -168,8 +176,8 @@ if uploaded_file:
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 output_df.to_excel(writer, index=False, sheet_name='Consolidated')
             
-            st.success("✅ Success! Total fetched and Percentage formatted to 2 decimals.")
-            st.download_button("📥 Download Final Sheet", output.getvalue(), "Final_Consolidated.xlsx")
+            st.success("✅ Calculations Finished! Percentage set to 2 decimal places (e.g. 56.57).")
+            st.download_button("📥 Download Excel", output.getvalue(), "Final_Consolidated.xlsx")
 
     except Exception as e:
         st.error(f"Error: {e}")
