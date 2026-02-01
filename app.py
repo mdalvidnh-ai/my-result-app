@@ -3,13 +3,13 @@ import pandas as pd
 import numpy as np
 from io import BytesIO
 
-st.set_page_config(page_title="Consolidated Marksheet Pro", layout="wide")
+st.set_page_config(page_title="Result Processor Pro", layout="wide")
 
 st.title("📊 School Exam Consolidator")
-st.info("Structure: 7 Rows per Student | 13 Columns Total")
+st.write("Enter Practical marks directly in the table below. The app will calculate Totals, %, Result, and Rank.")
 
 def custom_round(x):
-    # Rule: 0.5 and above rounds up (e.g., 34.5 -> 35)
+    # Rounds 0.5 up (e.g., 35.5 -> 36)
     return int(np.floor(x + 0.5))
 
 uploaded_file = st.file_uploader("Upload App.xlsx", type="xlsx")
@@ -17,131 +17,131 @@ uploaded_file = st.file_uploader("Upload App.xlsx", type="xlsx")
 if uploaded_file:
     try:
         xl = pd.ExcelFile(uploaded_file)
-        exam_names = ['FIRST UNIT TEST', 'FIRST TERM', 'SECOND UNIT TEST', 'ANNUAL EXAM']
         
-        # Exact column names from your template
-        subj_list = ['Eng', 'Mar', 'Geo', 'Soc', 'Psy', 'Eco']
+        # Exact sheet names to look for
+        exam_mapping = {
+            'FIRST UNIT TEST': 'FIRST UNIT TEST (25)',
+            'FIRST TERM': 'FIRST TERM EXAM (50)',
+            'SECOND UNIT TEST': 'SECOND UNIT TEST (25)',
+            'ANNUAL EXAM': 'ANNUAL EXAM (70/80)'
+        }
+        
+        # Subject mapping (Sheet -> Template)
+        subj_map = {'ENG': 'Eng', 'MAR': 'Mar', 'GEOG': 'Geo', 'SOCIO': 'Soc', 'PSYC': 'Psy', 'ECO': 'Eco'}
+        subj_list = list(subj_map.values())
         result_cols = ['Grand Total', '%', 'Result', 'Remark', 'Rank']
         all_cols = ['Roll No.', 'Column1', 'Column2'] + subj_list + result_cols
 
-        # Mapping for data extraction
-        subj_map = {'ENG': 'Eng', 'MAR': 'Mar', 'GEOG': 'Geo', 'SOCIO': 'Soc', 'PSYC': 'Psy', 'ECO': 'Eco'}
-
         all_students = {}
 
-        # 1. Collect data
-        for sheet in exam_names:
-            if sheet in xl.sheet_names:
-                df = xl.parse(sheet)
-                df.columns = df.columns.str.strip().str.upper()
+        # 1. Collect data from sheets
+        for sheet_name, template_label in exam_mapping.items():
+            if sheet_name in xl.sheet_names:
+                df = xl.parse(sheet_name)
+                df.columns = df.columns.str.strip().str.upper() # Clean column headers
+                
                 for _, row in df.iterrows():
-                    roll = row['ROLL NO.']
+                    roll = row.get('ROLL NO.')
+                    if roll is None: continue
+                    
                     if roll not in all_students:
                         all_students[roll] = {'Name': row.get('STUDENT NAME', 'Unknown'), 'Exams': {}}
                     
-                    # Pull marks and sheet-specific results
-                    data = {subj_map[k]: row.get(k, 0) for k in subj_map.keys()}
-                    data['Grand Total'] = row.get('TOTAL', '')
-                    data['%'] = row.get('%', '')
-                    data['Result'] = row.get('RESULT', '')
-                    all_students[roll]['Exams'][sheet] = data
+                    # Extract marks
+                    marks_data = {subj_map[k]: row.get(k, 0) for k in subj_map.keys()}
+                    all_students[roll]['Exams'][template_label] = marks_data
 
         # 2. Build the Fixed Template (7 Rows per student)
         final_rows = []
+        categories = [
+            'FIRST UNIT TEST (25)', 'FIRST TERM EXAM (50)', 
+            'SECOND UNIT TEST (25)', 'ANNUAL EXAM (70/80)', 
+            'INT/PRACTICAL (20/30)', 'Total Marks Out of 200',
+            'Average Marks 200/2=100'
+        ]
+
         for roll in sorted(all_students.keys()):
             s = all_students[roll]
-            categories = [
-                'FIRST UNIT TEST (25)', 'FIRST TERM EXAM (50)', 
-                'SECOND UNIT TEST (25)', 'ANNUAL EXAM (70/80)', 
-                'INT/PRACTICAL (20/30)', 'Total Marks Out of 200',
-                'Average Marks 200/2=100'
-            ]
-            
             for cat in categories:
                 row_data = {
                     'Roll No.': roll if cat == 'FIRST UNIT TEST (25)' else '',
                     'Column1': s['Name'] if cat == 'FIRST UNIT TEST (25)' else '',
                     'Column2': cat
                 }
-                # Initialize all columns as empty
+                # Initialize columns
                 for col in subj_list + result_cols: row_data[col] = ''
                 
-                # Fill data for the 4 exam rows
-                key = cat.split(' (')[0]
-                if key in s['Exams']:
-                    row_data.update(s['Exams'][key])
+                # Pre-fill exam marks
+                if cat in s['Exams']:
+                    row_data.update(s['Exams'][cat])
                 elif cat == 'INT/PRACTICAL (20/30)':
-                    for sub in subj_list: row_data[sub] = 0 # Default for teacher entry
+                    for sub in subj_list: row_data[sub] = 0 # Teacher will edit this
                 
                 final_rows.append(row_data)
 
         base_df = pd.DataFrame(final_rows)
 
-        # 3. Editable Table
-        st.subheader("Interactive Marksheet")
-        st.write("Enter Practical marks in the 5th row of each student block.")
+        # 3. Interactive Editor
+        st.subheader("Edit Practical Marks Below")
         edited_df = st.data_editor(base_df, hide_index=True, use_container_width=True)
 
-        if st.button("Finalize All Calculations & Ranks"):
+        if st.button("Calculate Totals & Download"):
             processed_data = []
-            pass_list = [] # For ranking
+            pass_ranking = []
 
-            # Process in blocks of 7
+            # Step through 7 rows at a time
             for i in range(0, len(edited_df), 7):
                 block = edited_df.iloc[i:i+7].copy()
                 
-                # Rows 0-4 are inputs (Exams + Practical)
-                input_rows = block.iloc[0:5]
-                
-                # Row 5: Total Out of 200
-                total_row = block.iloc[5].to_dict()
-                # Row 6: Average Marks
-                avg_row = block.iloc[6].to_dict()
-                
-                subjects_for_pass_check = []
-                grand_total_100 = 0
-
+                # Rows index 0 to 4 are the inputs (4 Exams + 1 Practical)
+                # Ensure they are numeric
                 for sub in subj_list:
-                    # Sum the first 5 rows for this subject
-                    s_sum = pd.to_numeric(input_rows[sub], errors='coerce').sum()
-                    total_row[sub] = s_sum
-                    
-                    # Round average
-                    rounded_avg = custom_round(s_sum / 2)
-                    avg_row[sub] = rounded_avg
-                    
-                    subjects_for_pass_check.append(rounded_avg)
-                    grand_total_100 += rounded_avg
+                    block[sub] = pd.to_numeric(block[sub], errors='coerce').fillna(0)
 
-                # Average Row Calculations
-                avg_row['Grand Total'] = grand_total_100
-                avg_row['%'] = round((grand_total_100 / 600) * 100, 2)
+                # Row 5: Total Out of 200
+                total_200_vals = block.iloc[0:5][subj_list].sum()
+                for sub in subj_list:
+                    block.at[block.index[5], sub] = total_200_vals[sub]
                 
-                is_pass = all(m >= 35 for m in subjects_for_pass_check)
-                avg_row['Result'] = "PASS" if is_pass else "FAIL"
+                # Row 6: Average Marks 100
+                avg_100_vals = total_200_vals.apply(lambda x: custom_round(x/2))
+                for sub in subj_list:
+                    block.at[block.index[6], sub] = avg_100_vals[sub]
 
-                # Re-add all 7 rows to the final list
-                for j in range(5):
-                    processed_data.append(block.iloc[j].to_dict())
-                processed_data.append(total_row)
-                processed_data.append(avg_row)
+                # Result & Stats for Average Row
+                grand_total = avg_100_vals.sum()
+                percentage = round((grand_total / 600) * 100, 2)
+                is_pass = all(m >= 35 for m in avg_100_vals)
+                
+                block.at[block.index[6], 'Grand Total'] = grand_total
+                block.at[block.index[6], '%'] = percentage
+                block.at[block.index[6], 'Result'] = "PASS" if is_pass else "FAIL"
 
-                # Store index for ranking
+                processed_data.append(block)
+                
                 if is_pass:
-                    pass_list.append({'index': len(processed_data)-1, 'total': grand_total_100})
+                    pass_ranking.append({'row_idx': (i + 6), 'total': grand_total})
 
-            # 4. Global Ranking for Pass students
-            pass_list.sort(key=lambda x: x['total'], reverse=True)
-            for rank, item in enumerate(pass_list, 1):
-                processed_data[item['index']]['Rank'] = rank
+            # Re-assemble and apply Rank
+            final_df = pd.concat(processed_data)
+            pass_ranking.sort(key=lambda x: x['total'], reverse=True)
+            
+            # Create a dictionary for quick rank lookup
+            ranks = {item['row_idx']: r+1 for r, item in enumerate(pass_ranking)}
+            
+            # Apply rank to the Average Marks rows
+            final_rows_list = final_df.to_dict('records')
+            for idx, r in enumerate(final_rows_list):
+                if idx in ranks:
+                    r['Rank'] = ranks[idx]
 
-            # 5. Export
-            output_df = pd.DataFrame(processed_data)
+            # Export
+            output_df = pd.DataFrame(final_rows_list)
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 output_df.to_excel(writer, index=False, sheet_name='Consolidated')
             
-            st.success("Calculated! Only PASS students are ranked based on Average Marks row.")
+            st.success("Calculations Finished!")
             st.download_button("📥 Download Excel", output.getvalue(), "Final_Consolidated.xlsx")
 
     except Exception as e:
